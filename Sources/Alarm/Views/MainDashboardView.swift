@@ -3,7 +3,7 @@ import SwiftUI
 public enum DashboardTab: String, CaseIterable, Identifiable {
     case alarms = "Alarms"
     case quickTimers = "Quick Focus"
-    case cloudSync = "Cloud Sync"
+    case account = "Account"
     
     public var id: String { rawValue }
     
@@ -11,14 +11,13 @@ public enum DashboardTab: String, CaseIterable, Identifiable {
         switch self {
         case .alarms: return "alarm.fill"
         case .quickTimers: return "timer"
-        case .cloudSync: return "cloud.fill"
+        case .account: return "person.crop.circle"
         }
     }
 }
 
 public struct MainDashboardView: View {
     @ObservedObject private var store = AlarmStore.shared
-    @ObservedObject private var syncService = RedisSyncService.shared
     
     @State private var selectedTab: DashboardTab = .alarms
     @State private var showingAddSheet: Bool = false
@@ -39,8 +38,8 @@ public struct MainDashboardView: View {
                 alarmsTabContent
             case .quickTimers:
                 quickTimersTabContent
-            case .cloudSync:
-                SyncSettingsView()
+            case .account:
+                AccountView()
             }
         }
         .frame(minWidth: 760, minHeight: 660)
@@ -143,10 +142,6 @@ public struct MainDashboardView: View {
                                         .padding(.vertical, 2)
                                         .background(Capsule().fill(selectedTab == tab ? Color.red : Color.secondary.opacity(0.2)))
                                         .foregroundColor(selectedTab == tab ? .white : .secondary)
-                                } else if tab == .cloudSync && syncService.settings.isEnabled {
-                                    Circle()
-                                        .fill(syncService.status == .connected ? Color.green : Color.orange)
-                                        .frame(width: 7, height: 7)
                                 }
                             }
                             .padding(.horizontal, 12)
