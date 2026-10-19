@@ -1,0 +1,77 @@
+#!/bin/bash
+set -e
+
+echo "=== Building Real Alarm for macOS ==="
+
+# 1. Compile in release mode
+swift build -c release
+
+# 2. Setup bundle structure
+APP_NAME="Alarm.app"
+rm -rf "$APP_NAME"
+mkdir -p "$APP_NAME/Contents/MacOS"
+mkdir -p "$APP_NAME/Contents/Resources"
+
+# 3. Copy binary
+cp .build/release/Alarm "$APP_NAME/Contents/MacOS/Alarm"
+chmod +x "$APP_NAME/Contents/MacOS/Alarm"
+
+# 4. Generate Icon
+echo "=== Generating App Icons ==="
+swift scripts/make_icon.swift
+ICONSET_DIR="scripts/AppIcon.iconset"
+rm -rf "$ICONSET_DIR"
+mkdir -p "$ICONSET_DIR"
+
+sips -z 16 16     scripts/icon_1024.png --out "$ICONSET_DIR/icon_16x16.png" > /dev/null
+sips -z 32 32     scripts/icon_1024.png --out "$ICONSET_DIR/icon_16x16@2x.png" > /dev/null
+sips -z 32 32     scripts/icon_1024.png --out "$ICONSET_DIR/icon_32x32.png" > /dev/null
+sips -z 64 64     scripts/icon_1024.png --out "$ICONSET_DIR/icon_32x32@2x.png" > /dev/null
+sips -z 128 128   scripts/icon_1024.png --out "$ICONSET_DIR/icon_128x128.png" > /dev/null
+sips -z 256 256   scripts/icon_1024.png --out "$ICONSET_DIR/icon_128x128@2x.png" > /dev/null
+sips -z 256 256   scripts/icon_1024.png --out "$ICONSET_DIR/icon_256x256.png" > /dev/null
+sips -z 512 512   scripts/icon_1024.png --out "$ICONSET_DIR/icon_256x256@2x.png" > /dev/null
+sips -z 512 512   scripts/icon_1024.png --out "$ICONSET_DIR/icon_512x512.png" > /dev/null
+cp scripts/icon_1024.png "$ICONSET_DIR/icon_512x512@2x.png"
+
+iconutil -c icns "$ICONSET_DIR" -o "$APP_NAME/Contents/Resources/AppIcon.icns"
+rm -rf "$ICONSET_DIR" scripts/icon_1024.png
+
+# 5. Create Info.plist
+cat << 'EOF' > "$APP_NAME/Contents/Info.plist"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>Alarm</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.hexify.realalarm</string>
+    <key>CFBundleName</key>
+    <string>Real Alarm</string>
+    <key>CFBundleDisplayName</key>
+    <string>Real Alarm</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>NSSpeechSynthesisUsageDescription</key>
+    <string>Alarm uses speech synthesis to sing and announce alarm descriptions loudly.</string>
+</dict>
+</plist>
+EOF
+
+# 6. Ad-hoc code signing
+codesign --force --deep --sign - "$APP_NAME"
+
+echo "=== Alarm.app successfully created and signed! ==="
