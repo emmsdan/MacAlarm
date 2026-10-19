@@ -57,6 +57,11 @@ public struct AlarmEditView: View {
             
             ScrollView {
                 VStack(spacing: 24) {
+                    // Quick Preset Templates (if new alarm)
+                    if alarmToEdit == nil {
+                        presetsSection
+                    }
+                    
                     // Time Picker Section
                     timePickerSection
                     
@@ -82,6 +87,86 @@ public struct AlarmEditView: View {
     }
     
     // MARK: - Sections
+    
+    private var presetsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Quick Presets")
+                .font(.headline)
+            
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    presetChip(
+                        name: "🌅 Morning Wake-Up",
+                        hour: 7, minute: 30,
+                        title: "Morning Wake Up",
+                        desc: "Rise and shine! Time to conquer the day with high energy!",
+                        sound: .digitalBeep,
+                        days: [2, 3, 4, 5, 6],
+                        challenge: .instantClick
+                    )
+                    presetChip(
+                        name: "⚡ Deep Focus Sprint",
+                        hour: 11, minute: 0,
+                        title: "Deep Focus Sprint Complete",
+                        desc: "Great focus session! Stand up, stretch, and rest your eyes.",
+                        sound: .harmoniousWake,
+                        days: [2, 3, 4, 5, 6],
+                        challenge: .instantClick
+                    )
+                    presetChip(
+                        name: "🔥 Heavy Sleeper",
+                        hour: 6, minute: 30,
+                        title: "Wake Up Right Now!",
+                        desc: "Get out of bed immediately! Solve the puzzle to turn this off!",
+                        sound: .emergencySiren,
+                        days: [1, 2, 3, 4, 5, 6, 7],
+                        challenge: .mathChallenge
+                    )
+                    presetChip(
+                        name: "💊 Daily Medicine",
+                        hour: 9, minute: 0,
+                        title: "Take Daily Medication",
+                        desc: "Time to take your vitamins and prescribed medication.",
+                        sound: .twinBell,
+                        days: [1, 2, 3, 4, 5, 6, 7],
+                        challenge: .instantClick
+                    )
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+    }
+    
+    private func presetChip(name: String, hour: Int, minute: Int, title: String, desc: String, sound: SoundType, days: [Int], challenge: ChallengeType) -> some View {
+        Button(action: {
+            self.title = title
+            self.description = desc
+            self.soundType = sound
+            self.repeatDays = Set(days)
+            self.challengeType = challenge
+            var comps = DateComponents()
+            comps.hour = hour
+            comps.minute = minute
+            if let date = Calendar.current.date(from: comps) {
+                self.selectedDate = date
+            }
+        }) {
+            Text(name)
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(NSColor.quaternaryLabelColor).opacity(0.6))
+                )
+                .foregroundColor(.primary)
+        }
+        .buttonStyle(.plain)
+    }
     
     private var timePickerSection: some View {
         VStack(spacing: 8) {
@@ -230,16 +315,27 @@ public struct AlarmEditView: View {
             Divider()
             
             // Sing Description Switch
-            Toggle(isOn: $singVoiceEnabled) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Sing / Announce Description Aloud")
-                        .font(.body.weight(.medium))
-                    Text("Repeatedly speaks the alarm title and description loudly through voice synthesis")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: $singVoiceEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Sing / Announce Description Aloud")
+                            .font(.body.weight(.medium))
+                        Text("Repeatedly speaks the alarm title and description loudly through voice synthesis")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                
+                if singVoiceEnabled {
+                    Button(action: {
+                        audioEngine.previewVoice(text: description.isEmpty ? title : description)
+                    }) {
+                        Label("Preview Spoken Voice", systemImage: "waveform.badge.mic")
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
-            .toggleStyle(.switch)
             
             Divider()
             

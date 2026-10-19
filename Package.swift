@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "Alarm",
+    name: "MacAlarm",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "Alarm", targets: ["Alarm"])
+        .executable(name: "MacAlarm", targets: ["Alarm"])
     ],
     targets: [
         .executableTarget(

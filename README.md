@@ -36,6 +36,13 @@ A native macOS application designed to work like a phone alarm: it **blocks the 
    - Stays active in the background even if the main dashboard window is closed.
    - Automatically stores all alarms in `~/Library/Application Support/com.alarm.macapp/alarms.json`.
 
+5. **Remote Redis Pub/Sub Syncing (Optional)**
+   - **Cross-device synchronization**: Synchronize alarms across multiple Macs or from remote web/mobile triggers.
+   - **Email account namespace**: Uses your email address to automatically namespace the channel (`alarm:sync:<email>`).
+   - **Real-time Pub/Sub**: Automatically pushes alarm creation, modifications, dismissals, and snoozes to your Redis server.
+   - **Remote Triggers**: Send remote trigger, snooze, or dismiss commands to your Mac via Redis.
+   - **Built-in Testing**: "Test Redis Connection" provides immediate diagnostic feedback with PING/PONG validation.
+
 ---
 
 ## Distribution (.dmg)

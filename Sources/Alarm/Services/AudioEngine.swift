@@ -122,6 +122,21 @@ public final class AudioEngine: NSObject, ObservableObject, AVSpeechSynthesizerD
         }
     }
     
+    public func previewVoice(text: String) {
+        if speechSynthesizer.isSpeaking {
+            speechSynthesizer.stopSpeaking(at: .immediate)
+        }
+        let msg = text.trimmingCharacters(in: .whitespaces).isEmpty ? "Alarm announcement preview! Wake up and start your day!" : text
+        let utterance = AVSpeechUtterance(string: msg)
+        utterance.rate = 0.50
+        utterance.pitchMultiplier = 1.15
+        utterance.volume = 1.0
+        if let voice = AVSpeechSynthesisVoice(language: "en-US") {
+            utterance.voice = voice
+        }
+        speechSynthesizer.speak(utterance)
+    }
+    
     private func playTone(soundType: SoundType, preview: Bool = false) {
         guard let data = WaveformGenerator.generateWav(for: soundType) else { return }
         do {

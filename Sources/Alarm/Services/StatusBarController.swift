@@ -42,19 +42,14 @@ public final class StatusBarController: NSObject {
         menu.addItem(NSMenuItem.separator())
         
         // Open Dashboard
-        let openItem = NSMenuItem(title: "Open Alarm Dashboard", action: #selector(openDashboard), keyEquivalent: "o")
+        let openItem = NSMenuItem(title: "Open Real Alarm", action: #selector(openDashboard), keyEquivalent: "o")
         openItem.target = self
         menu.addItem(openItem)
-        
-        // Test Alarm
-        let testItem = NSMenuItem(title: "⚡ Test Fullscreen Alarm", action: #selector(testAlarm), keyEquivalent: "t")
-        testItem.target = self
-        menu.addItem(testItem)
         
         menu.addItem(NSMenuItem.separator())
         
         // Quit
-        let quitItem = NSMenuItem(title: "Quit Alarm", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit Real Alarm", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
         
@@ -75,22 +70,6 @@ public final class StatusBarController: NSObject {
         if let first = NSApp.windows.first(where: { !($0 is FullScreenAlarmWindow) }) {
             first.makeKeyAndOrderFront(nil)
         }
-    }
-    
-    @objc private func testAlarm() {
-        let store = AlarmStore.shared
-        let testAlarm = AlarmItem(
-            title: "Demonstration Alarm",
-            description: "Testing screen-blocking alarm with loud singing!",
-            hour: Calendar.current.component(.hour, from: Date()),
-            minute: Calendar.current.component(.minute, from: Date()),
-            isEnabled: true,
-            soundType: .digitalBeep,
-            singVoiceEnabled: true,
-            volumeBlast: true,
-            challengeType: .instantClick
-        )
-        store.testTriggerAlarm(testAlarm)
     }
     
     @objc private func quitApp() {

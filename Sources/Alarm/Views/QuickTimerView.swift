@@ -4,10 +4,10 @@ public struct QuickTimerView: View {
     @ObservedObject private var store = AlarmStore.shared
     
     private let presets: [(title: String, desc: String, minutes: Int, icon: String)] = [
-        ("Quick Test (1m)", "Test alarm ringing and singing loud!", 1, "bolt.fill"),
+        ("Short Recharge (5m)", "Quick eye-rest, hydration, and mindful breathing", 5, "cup.and.saucer.fill"),
         ("Power Nap (20m)", "Quick recharge power nap to boost energy!", 20, "bed.double.fill"),
-        ("Pomodoro Focus (25m)", "Time for a 5-minute break and eye rest!", 25, "timer"),
-        ("Deep Work (45m)", "Sprint complete! Stand up, stretch, and hydrate!", 45, "brain.head.profile"),
+        ("Pomodoro Focus (25m)", "Time for a 5-minute break and stretch!", 25, "timer"),
+        ("Deep Work Sprint (45m)", "Sprint complete! Stand up, stretch, and hydrate!", 45, "brain.head.profile"),
     ]
     
     public init() {}

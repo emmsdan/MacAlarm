@@ -44,15 +44,15 @@ cat << 'EOF' > "$APP_NAME/Contents/Info.plist"
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>Alarm</string>
+    <string>MacAlarm</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.hexify.realalarm</string>
     <key>CFBundleName</key>
-    <string>Real Alarm</string>
+    <string>MacAlarm</string>
     <key>CFBundleDisplayName</key>
-    <string>Real Alarm</string>
+    <string>MacAlarm</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -66,7 +66,7 @@ cat << 'EOF' > "$APP_NAME/Contents/Info.plist"
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
     <key>NSSpeechSynthesisUsageDescription</key>
-    <string>Alarm uses speech synthesis to sing and announce alarm descriptions loudly.</string>
+    <string>MacAlarm uses speech synthesis to sing and announce alarm descriptions loudly.</string>
 </dict>
 </plist>
 EOF

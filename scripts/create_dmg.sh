@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-APP_NAME="Alarm.app"
-DMG_NAME="RealAlarm-1.0.0.dmg"
-VOL_NAME="Real Alarm"
+APP_NAME="MacAlarm.app"
+DMG_NAME="MacAlarm-1.0.0.dmg"
+VOL_NAME="MacAlarm"
 STAGING_DIR="dmg_staging"
 TMP_DMG="temp_$DMG_NAME"
 

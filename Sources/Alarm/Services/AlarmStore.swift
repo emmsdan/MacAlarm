@@ -127,6 +127,7 @@ public final class AlarmStore: ObservableObject {
             }
             alarms[idx] = updated
             saveAlarms()
+            RedisSyncService.shared.publishAlarmChange(action: .remoteDismiss, alarm: updated, allAlarms: alarms)
         }
         
         self.currentlyRingingAlarm = nil
@@ -148,6 +149,7 @@ public final class AlarmStore: ObservableObject {
             updated.snoozeUntil = snoozeDate
             alarms[idx] = updated
             saveAlarms()
+            RedisSyncService.shared.publishAlarmChange(action: .remoteSnooze, alarm: updated, allAlarms: alarms)
         }
         
         self.currentlyRingingAlarm = nil
@@ -159,6 +161,7 @@ public final class AlarmStore: ObservableObject {
         alarms.append(alarm)
         sortAlarms()
         saveAlarms()
+        RedisSyncService.shared.publishAlarmChange(action: .upsertAlarm, alarm: alarm, allAlarms: alarms)
     }
     
     public func updateAlarm(_ alarm: AlarmItem) {
@@ -166,12 +169,16 @@ public final class AlarmStore: ObservableObject {
             alarms[idx] = alarm
             sortAlarms()
             saveAlarms()
+            RedisSyncService.shared.publishAlarmChange(action: .upsertAlarm, alarm: alarm, allAlarms: alarms)
         }
     }
     
     public func deleteAlarm(id: UUID) {
-        alarms.removeAll { $0.id == id }
-        saveAlarms()
+        if let target = alarms.first(where: { $0.id == id }) {
+            alarms.removeAll { $0.id == id }
+            saveAlarms()
+            RedisSyncService.shared.publishAlarmChange(action: .deleteAlarm, alarm: target, allAlarms: alarms)
+        }
     }
     
     public func toggleAlarm(id: UUID) {
@@ -181,8 +188,14 @@ public final class AlarmStore: ObservableObject {
                 alarms[idx].isSnoozed = false
                 alarms[idx].snoozeUntil = nil
             }
+            let updated = alarms[idx]
             saveAlarms()
+            RedisSyncService.shared.publishAlarmChange(action: .upsertAlarm, alarm: updated, allAlarms: alarms)
         }
+    }
+    
+    public func syncAllToRemote() {
+        RedisSyncService.shared.publishAlarmChange(action: .syncAll, allAlarms: alarms)
     }
     
     private func sortAlarms() {
