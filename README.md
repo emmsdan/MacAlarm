@@ -38,10 +38,24 @@ A native macOS application designed to work like a phone alarm: it **blocks the 
 
 ---
 
+## Distribution (.dmg)
+
+A compressed, pre-packaged macOS disk image is generated and ready to share:
+- **File**: [`RealAlarm-1.0.0.dmg`](file:///Users/emmsdan/Repo/hexify/alarm/RealAlarm-1.0.0.dmg) (approx 1.8 MB)
+- **Features**: Drag-and-drop installation into `/Applications` with branded installer artwork.
+
+### Generate or Re-build the DMG
+To rebuild the distribution disk image at any time:
+```bash
+./scripts/create_dmg.sh
+```
+
+---
+
 ## Quick Start
 
 ### Launching the Application
-Double-click `Alarm.app` in this folder or run from terminal:
+Double-click `Alarm.app` in this folder, open the `RealAlarm-1.0.0.dmg`, or run:
 ```bash
 open Alarm.app
 ```
