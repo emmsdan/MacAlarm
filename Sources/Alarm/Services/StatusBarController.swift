@@ -42,14 +42,14 @@ public final class StatusBarController: NSObject {
         menu.addItem(NSMenuItem.separator())
         
         // Open Dashboard
-        let openItem = NSMenuItem(title: "Open Real Alarm", action: #selector(openDashboard), keyEquivalent: "o")
+        let openItem = NSMenuItem(title: "Open MacAlarm Now", action: #selector(openDashboard), keyEquivalent: "o")
         openItem.target = self
         menu.addItem(openItem)
         
         menu.addItem(NSMenuItem.separator())
         
         // Quit
-        let quitItem = NSMenuItem(title: "Quit Real Alarm", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit MacAlarm Now", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
         

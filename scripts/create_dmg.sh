@@ -1,25 +1,34 @@
 #!/bin/bash
 set -e
 
-APP_NAME="MacAlarm.app"
-DMG_NAME="MacAlarm-1.0.0.dmg"
-VOL_NAME="MacAlarm"
+VERSION="${1:-}"
+if [ -z "$VERSION" ]; then
+    if [ -f "VERSION" ]; then
+        VERSION=$(cat VERSION | tr -d '[:space:]')
+    else
+        VERSION="1.0.0"
+    fi
+fi
+
+APP_NAME="MacAlarm Now.app"
+DMG_NAME="MacAlarm-${VERSION}.dmg"
+VOL_NAME="MacAlarm Now"
 STAGING_DIR="dmg_staging"
 TMP_DMG="temp_$DMG_NAME"
 
-echo "=== Preparing DMG Build ==="
+echo "=== Preparing DMG Build for $DMG_NAME ==="
 
-# 1. Ensure Alarm.app exists
+# 1. Ensure MacAlarm Now.app exists
 if [ ! -d "$APP_NAME" ]; then
-    echo "Alarm.app not found. Building first..."
-    ./scripts/bundle_app.sh
+    echo "$APP_NAME not found. Building first..."
+    ./scripts/bundle_app.sh "$VERSION"
 fi
 
 # 2. Generate DMG Background
 echo "=== Generating DMG Background Graphic ==="
 swift scripts/make_dmg_background.swift
 
-# 3. Clean up old artifacts
+# 3. Clean up old staging artifacts
 rm -rf "$STAGING_DIR" "$TMP_DMG" "$DMG_NAME"
 mkdir -p "$STAGING_DIR"
 
@@ -66,7 +75,7 @@ tell application "Finder"
         try
             set background picture of theViewOptions to file ".background:background.png"
         end try
-        set position of item "Alarm.app" of container window to {160, 240}
+        set position of item "$APP_NAME" of container window to {160, 240}
         set position of item "Applications" of container window to {500, 240}
         close
         open
@@ -85,7 +94,7 @@ hdiutil detach "$MOUNT_DIR" -force || true
 sleep 1
 
 # 9. Compress to final distribution DMG
-echo "=== Compressing to Final UDZO DMG ==="
+echo "=== Compressing to Final UDZO DMG: $DMG_NAME ==="
 hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG_NAME"
 
 # 10. Clean up

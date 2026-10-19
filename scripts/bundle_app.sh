@@ -1,20 +1,29 @@
 #!/bin/bash
 set -e
 
-echo "=== Building Real Alarm for macOS ==="
+VERSION="${1:-}"
+if [ -z "$VERSION" ]; then
+    if [ -f "VERSION" ]; then
+        VERSION=$(cat VERSION | tr -d '[:space:]')
+    else
+        VERSION="1.0.0"
+    fi
+fi
+
+echo "=== Building MacAlarm Now (v$VERSION) ==="
 
 # 1. Compile in release mode
 swift build -c release
 
 # 2. Setup bundle structure
-APP_NAME="Alarm.app"
+APP_NAME="MacAlarm Now.app"
 rm -rf "$APP_NAME"
 mkdir -p "$APP_NAME/Contents/MacOS"
 mkdir -p "$APP_NAME/Contents/Resources"
 
 # 3. Copy binary
-cp .build/release/Alarm "$APP_NAME/Contents/MacOS/Alarm"
-chmod +x "$APP_NAME/Contents/MacOS/Alarm"
+cp .build/release/Alarm "$APP_NAME/Contents/MacOS/MacAlarm"
+chmod +x "$APP_NAME/Contents/MacOS/MacAlarm"
 
 # 4. Generate Icon
 echo "=== Generating App Icons ==="
@@ -38,7 +47,7 @@ iconutil -c icns "$ICONSET_DIR" -o "$APP_NAME/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET_DIR" scripts/icon_1024.png
 
 # 5. Create Info.plist
-cat << 'EOF' > "$APP_NAME/Contents/Info.plist"
+cat << EOF > "$APP_NAME/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -48,17 +57,17 @@ cat << 'EOF' > "$APP_NAME/Contents/Info.plist"
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.hexify.realalarm</string>
+    <string>com.hexify.macalarmnow</string>
     <key>CFBundleName</key>
-    <string>MacAlarm</string>
+    <string>MacAlarm Now</string>
     <key>CFBundleDisplayName</key>
-    <string>MacAlarm</string>
+    <string>MacAlarm Now</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$VERSION</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
@@ -66,7 +75,7 @@ cat << 'EOF' > "$APP_NAME/Contents/Info.plist"
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
     <key>NSSpeechSynthesisUsageDescription</key>
-    <string>MacAlarm uses speech synthesis to sing and announce alarm descriptions loudly.</string>
+    <string>MacAlarm Now uses speech synthesis to sing and announce alarm descriptions loudly.</string>
 </dict>
 </plist>
 EOF
@@ -74,4 +83,4 @@ EOF
 # 6. Ad-hoc code signing
 codesign --force --deep --sign - "$APP_NAME"
 
-echo "=== Alarm.app successfully created and signed! ==="
+echo "=== '$APP_NAME' (v$VERSION) successfully created and signed! ==="

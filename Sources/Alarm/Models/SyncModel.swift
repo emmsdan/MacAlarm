@@ -3,41 +3,44 @@ import Foundation
 public struct SyncSettings: Codable, Equatable, Sendable {
     public var isEnabled: Bool
     public var email: String
-    public var redisHost: String
-    public var redisPort: Int
-    public var redisPassword: String
-    public var useTLS: Bool
-    public var customChannel: String
+    
+    // Internal/Advanced server overrides if specified via env or file
+    public var customHost: String?
+    public var customPort: Int?
+    public var customPassword: String?
+    public var customUseTLS: Bool?
+    public var customChannel: String?
     
     public init(
         isEnabled: Bool = false,
         email: String = "",
-        redisHost: String = "127.0.0.1",
-        redisPort: Int = 6379,
-        redisPassword: String = "",
-        useTLS: Bool = false,
-        customChannel: String = ""
+        customHost: String? = nil,
+        customPort: Int? = nil,
+        customPassword: String? = nil,
+        customUseTLS: Bool? = nil,
+        customChannel: String? = nil
     ) {
         self.isEnabled = isEnabled
         self.email = email
-        self.redisHost = redisHost
-        self.redisPort = redisPort
-        self.redisPassword = redisPassword
-        self.useTLS = useTLS
+        self.customHost = customHost
+        self.customPort = customPort
+        self.customPassword = customPassword
+        self.customUseTLS = customUseTLS
         self.customChannel = customChannel
     }
     
     public var activeChannel: String {
-        if !customChannel.trimmingCharacters(in: .whitespaces).isEmpty {
-            return customChannel.trimmingCharacters(in: .whitespaces)
+        if let custom = customChannel, !custom.trimmingCharacters(in: .whitespaces).isEmpty {
+            return custom.trimmingCharacters(in: .whitespaces)
         }
         let cleanEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
         if cleanEmail.isEmpty {
-            return "alarm:sync:default"
+            return "macalarm:sync:default"
         }
         // Normalize email to safe channel name
         let safeName = cleanEmail.replacingOccurrences(of: "@", with: "_at_").replacingOccurrences(of: ".", with: "_")
-        return "alarm:sync:\(safeName)"
+        let prefix = ProcessInfo.processInfo.environment["REDIS_CHANNEL_PREFIX"] ?? "macalarm:sync:"
+        return "\(prefix)\(safeName)"
     }
 }
 

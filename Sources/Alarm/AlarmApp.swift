@@ -5,7 +5,7 @@ struct AlarmApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     var body: some Scene {
-        Window("Mac Real Alarm", id: "main") {
+        Window("MacAlarm Now", id: "main") {
             MainDashboardView()
         }
         .windowResizability(.contentMinSize)

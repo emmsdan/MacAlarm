@@ -1,18 +1,18 @@
-# Real Alarm for macOS
+# MacAlarm Now ⏰🔊
 
 A native macOS application designed to work like a phone alarm: it **blocks the entire screen fullscreen**, displays the alarm label and detailed description, **rings with high-decibel alert tones**, and **sings/announces the description loudly** via speech synthesis.
 
-![Real Alarm Icon](scripts/icon_1024.png)
+![MacAlarm Now Icon](scripts/icon_1024.png)
 
 ---
 
 ## Key Features
 
 1. **Fullscreen Screen-Lock Overlay**
-   - Uses `CGShieldingWindowLevel` to float above **all** windows, spaces, macOS Dock, and the Menu Bar.
-   - For multi-monitor setups, it locks companion displays with a dark ambient blackout screen so you cannot simply look away.
-   - Disables Escape and forces you to interact with the Dismiss or Snooze controls.
+   - Uses `CGShieldingWindowLevel` to float above **all** windows, spaces, the macOS Dock, and the Menu Bar.
+   - For multi-monitor setups, companion displays show a dark ambient blackout screen so you cannot look away.
    - Prevents display and system sleep while ringing (`IOPMAssertionCreateWithName`).
+   - Disables Escape and forces completion of the wake-up dismiss or snooze requirement.
 
 2. **Rings & Sings Loud**
    - **Rings**: Synthesized high-piercing tone profiles:
@@ -24,54 +24,63 @@ A native macOS application designed to work like a phone alarm: it **blocks the 
    - **100% Volume Blast**: Automatically boosts macOS output volume to 100% and un-mutes the speaker, restoring your previous volume once dismissed.
    - **Dynamic Audio Visualizer**: Live spectrum bars bouncing to the beat of the ring and voice announcement.
 
-3. **Wake-Up Dismiss Requirements**
-   - **Standard Dismiss**: Instant high-contrast button.
-   - **Hold 3 Seconds**: Requires holding down the button for 3 uninterrupted seconds with progress fill (prevents accidental taps while groggy).
+3. **Delightful & Intuitive User Experience**
+   - Clean tabbed interface:
+     - **Alarms**: Overview of scheduled alarms with smooth toggles and duplicate actions.
+     - **Quick Focus**: 1-click power naps (20m), Pomodoro sprints (25m), deep work (45m), and short recharges (5m).
+     - **Cloud Sync**: Simple email-based device synchronization without technical jargon.
+   - **One-Tap Presets**: Quick chips for Morning Wake-Up, Deep Focus, Heavy Sleeper, and Daily Medicine.
+   - **Voice Preview**: Listen to how your custom alarm message sounds in the editor.
+
+4. **Wake-Up Dismiss Requirements**
+   - **Standard Dismiss**: High-contrast button.
+   - **Hold 3 Seconds**: Requires holding down the button for 3 uninterrupted seconds with progress fill.
    - **Solve Math Problem**: Presents a random arithmetic equation (e.g. `28 + 19 = ?`) that must be solved before the alarm will stop.
    - **Snooze**: One-click or Spacebar shortcut (+5m, +9m, +15m).
 
-4. **Menubar & Background Execution**
-   - Lives in the macOS menu bar with an alarm status item.
-   - Displays real-time countdown to your next upcoming alarm.
-   - Stays active in the background even if the main dashboard window is closed.
-   - Automatically stores all alarms in `~/Library/Application Support/com.alarm.macapp/alarms.json`.
-
-5. **Remote Redis Pub/Sub Syncing (Optional)**
-   - **Cross-device synchronization**: Synchronize alarms across multiple Macs or from remote web/mobile triggers.
-   - **Email account namespace**: Uses your email address to automatically namespace the channel (`alarm:sync:<email>`).
-   - **Real-time Pub/Sub**: Automatically pushes alarm creation, modifications, dismissals, and snoozes to your Redis server.
-   - **Remote Triggers**: Send remote trigger, snooze, or dismiss commands to your Mac via Redis.
-   - **Built-in Testing**: "Test Redis Connection" provides immediate diagnostic feedback with PING/PONG validation.
+5. **Cloud Synchronization (Environment-Driven)**
+   - **Seamless Device Sync**: Users simply enter their email address to synchronize alarms across devices.
+   - **Zero Developer Jargon**: All server settings are driven via environment variables or `.env` files rather than cluttering user settings.
+   - **Supported Environment Variables**:
+     - `REDIS_HOST`: Redis host / IP (default: `127.0.0.1`)
+     - `REDIS_PORT`: Redis port (default: `6379`, or `6380` for TLS)
+     - `REDIS_PASSWORD`: Optional authentication token
+     - `REDIS_TLS`: Set to `true` or `1` for TLS/SSL
+     - `REDIS_CHANNEL_PREFIX`: Optional channel prefix (default: `macalarm:sync:`)
 
 ---
 
-## Distribution (.dmg)
+## Single-Command Releases
 
-A compressed, pre-packaged macOS disk image is generated and ready to share:
-- **File**: [`RealAlarm-1.0.0.dmg`](file:///Users/emmsdan/Repo/hexify/alarm/RealAlarm-1.0.0.dmg) (approx 1.8 MB)
-- **Features**: Drag-and-drop installation into `/Applications` with branded installer artwork.
+To create a new release, auto-increment the version, save the increment, and build the distribution `.dmg`:
 
-### Generate or Re-build the DMG
-To rebuild the distribution disk image at any time:
 ```bash
-./scripts/create_dmg.sh
+# Auto-increments patch version (e.g. 1.0.1 -> 1.0.2) and builds MacAlarm-1.0.2.dmg
+./release.sh
+
+# Or bump minor version (e.g. 1.0.2 -> 1.1.0)
+./release.sh minor
+
+# Or bump major version (e.g. 1.1.0 -> 2.0.0)
+./release.sh major
+
+# Or specify an explicit version
+./release.sh 1.2.0
 ```
+
+Every release command automatically:
+1. Reads the current version from `VERSION`.
+2. Computes and saves the new incremented version back to `VERSION`.
+3. Builds the production binary and bundles `MacAlarm Now.app`.
+4. Creates and compresses the DMG installer: `MacAlarm-x.x.x.dmg`.
+5. Creates a git tag and commit for the release.
 
 ---
 
 ## Quick Start
 
 ### Launching the Application
-Double-click `Alarm.app` in this folder, open the `RealAlarm-1.0.0.dmg`, or run:
+Double-click `MacAlarm Now.app` or run:
 ```bash
-open Alarm.app
+open "MacAlarm Now.app"
 ```
-
-### Re-building & Re-bundling
-To recompile and create a new signed release bundle:
-```bash
-./scripts/bundle_app.sh
-```
-
-### Immediate Fullscreen Test
-Click the **"⚡ Test Alarm Now"** button in the dashboard or choose **"Test Fullscreen Alarm"** from the Menubar status icon.

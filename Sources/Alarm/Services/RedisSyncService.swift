@@ -3,10 +3,10 @@ import Network
 import Combine
 
 public enum SyncConnectionStatus: String, Sendable {
-    case disconnected = "Disconnected"
+    case disconnected = "Offline"
     case connecting = "Connecting..."
-    case connected = "Connected & Synced"
-    case error = "Connection Error"
+    case connected = "Synced & Ready"
+    case error = "Sync Unavailable"
     case disabled = "Disabled"
     
     public var iconName: String {
@@ -14,7 +14,7 @@ public enum SyncConnectionStatus: String, Sendable {
         case .disconnected: return "circle"
         case .connecting: return "arrow.triangle.2.circlepath"
         case .connected: return "checkmark.circle.fill"
-        case .error: return "exclamationmark.triangle.fill"
+        case .error: return "exclamationmark.circle.fill"
         case .disabled: return "slash.circle"
         }
     }
@@ -38,6 +38,46 @@ public final class RedisSyncService: ObservableObject {
     private var reconnectTimer: Timer?
     private var incomingBuffer = Data()
     
+    // MARK: - Server Configuration from Environment
+    
+    public var serverHost: String {
+        if let custom = settings.customHost, !custom.isEmpty { return custom }
+        if let host = ProcessInfo.processInfo.environment["REDIS_HOST"], !host.isEmpty {
+            return host
+        }
+        return loadDotEnv()["REDIS_HOST"] ?? "127.0.0.1"
+    }
+    
+    public var serverPort: Int {
+        if let custom = settings.customPort, custom > 0 { return custom }
+        if let portStr = ProcessInfo.processInfo.environment["REDIS_PORT"], let p = Int(portStr) {
+            return p
+        }
+        if let dotP = loadDotEnv()["REDIS_PORT"], let p = Int(dotP) {
+            return p
+        }
+        return 6379
+    }
+    
+    public var serverPassword: String {
+        if let custom = settings.customPassword { return custom }
+        if let pass = ProcessInfo.processInfo.environment["REDIS_PASSWORD"] {
+            return pass
+        }
+        return loadDotEnv()["REDIS_PASSWORD"] ?? ""
+    }
+    
+    public var serverUseTLS: Bool {
+        if let custom = settings.customUseTLS { return custom }
+        if let tlsStr = ProcessInfo.processInfo.environment["REDIS_TLS"] {
+            return tlsStr == "1" || tlsStr.lowercased() == "true"
+        }
+        if let dotTls = loadDotEnv()["REDIS_TLS"] {
+            return dotTls == "1" || dotTls.lowercased() == "true"
+        }
+        return false
+    }
+    
     private init() {
         // Load device ID
         if let savedId = UserDefaults.standard.string(forKey: deviceIdKey) {
@@ -48,7 +88,7 @@ public final class RedisSyncService: ObservableObject {
             self.deviceId = newId
         }
         
-        // Load settings
+        // Load user settings
         if let data = UserDefaults.standard.data(forKey: settingsKey),
            let decoded = try? JSONDecoder().decode(SyncSettings.self, from: data) {
             self.settings = decoded
@@ -67,7 +107,7 @@ public final class RedisSyncService: ObservableObject {
     
     public func updateSettings(_ newSettings: SyncSettings) {
         let wasEnabled = settings.isEnabled
-        let hostChanged = (settings.redisHost != newSettings.redisHost || settings.redisPort != newSettings.redisPort || settings.email != newSettings.email || settings.redisPassword != newSettings.redisPassword || settings.useTLS != newSettings.useTLS)
+        let emailChanged = settings.email != newSettings.email
         
         self.settings = newSettings
         if let encoded = try? JSONEncoder().encode(newSettings) {
@@ -77,8 +117,8 @@ public final class RedisSyncService: ObservableObject {
         if !newSettings.isEnabled {
             disconnectSubscriber()
             status = .disabled
-            addLog("Sync disabled", success: true)
-        } else if !wasEnabled || hostChanged || !isSubscribed {
+            addLog("Cloud sync turned off", success: true)
+        } else if !wasEnabled || emailChanged || !isSubscribed {
             reconnect()
         }
     }
@@ -88,7 +128,7 @@ public final class RedisSyncService: ObservableObject {
     private func addLog(_ message: String, success: Bool = true) {
         let entry = SyncLogEntry(message: message, isSuccess: success)
         syncLogs.insert(entry, at: 0)
-        if syncLogs.count > 40 {
+        if syncLogs.count > 30 {
             syncLogs.removeLast()
         }
     }
@@ -109,17 +149,21 @@ public final class RedisSyncService: ObservableObject {
     }
     
     private func connectSubscriber() {
-        guard settings.isEnabled, !settings.redisHost.isEmpty else {
+        guard settings.isEnabled, !settings.email.trimmingCharacters(in: .whitespaces).isEmpty else {
             status = .disabled
             return
         }
         
         status = .connecting
-        addLog("Connecting to Redis at \(settings.redisHost):\(settings.redisPort)...", success: true)
+        addLog("Connecting cloud sync...", success: true)
         
-        let params: NWParameters = settings.useTLS ? .tls : .tcp
-        let host = NWEndpoint.Host(settings.redisHost)
-        let port = NWEndpoint.Port(rawValue: UInt16(settings.redisPort)) ?? 6379
+        let hostStr = serverHost
+        let portInt = serverPort
+        let useTLS = serverUseTLS
+        
+        let params: NWParameters = useTLS ? .tls : .tcp
+        let host = NWEndpoint.Host(hostStr)
+        let port = NWEndpoint.Port(rawValue: UInt16(portInt)) ?? 6379
         
         let conn = NWConnection(host: host, port: port, using: params)
         self.subscriberConnection = conn
@@ -132,7 +176,7 @@ public final class RedisSyncService: ObservableObject {
                     self.handleSubscriberReady(conn)
                 case .failed(let error):
                     self.status = .error
-                    self.addLog("Connection failed: \(error.localizedDescription)", success: false)
+                    self.addLog("Sync paused: \(error.localizedDescription)", success: false)
                     self.scheduleReconnect()
                 case .cancelled:
                     self.isSubscribed = false
@@ -149,14 +193,14 @@ public final class RedisSyncService: ObservableObject {
     }
     
     private func handleSubscriberReady(_ conn: NWConnection) {
-        // Authenticate if password provided
-        if !settings.redisPassword.isEmpty {
-            let authCmd = Self.makeRespCommand(["AUTH", settings.redisPassword])
+        let password = serverPassword
+        if !password.isEmpty {
+            let authCmd = Self.makeRespCommand(["AUTH", password])
             conn.send(content: authCmd, completion: .contentProcessed { [weak self] error in
                 Task { @MainActor in
                     if let error = error {
                         self?.status = .error
-                        self?.addLog("Auth send failed: \(error.localizedDescription)", success: false)
+                        self?.addLog("Auth check failed: \(error.localizedDescription)", success: false)
                         return
                     }
                     self?.subscribeToChannel(conn)
@@ -176,14 +220,15 @@ public final class RedisSyncService: ObservableObject {
                 guard let self = self else { return }
                 if let error = error {
                     self.status = .error
-                    self.addLog("Subscribe failed: \(error.localizedDescription)", success: false)
+                    self.addLog("Subscription failed: \(error.localizedDescription)", success: false)
                     self.scheduleReconnect()
                     return
                 }
                 
                 self.isSubscribed = true
                 self.status = .connected
-                self.addLog("Subscribed to channel: \(channel)", success: true)
+                self.lastSyncDate = Date()
+                self.addLog("Connected to cloud sync", success: true)
                 self.listenForMessages(conn)
             }
         })
@@ -195,7 +240,7 @@ public final class RedisSyncService: ObservableObject {
                 guard let self = self else { return }
                 if let error = error {
                     self.status = .error
-                    self.addLog("Receive error: \(error.localizedDescription)", success: false)
+                    self.addLog("Connection dropped: \(error.localizedDescription)", success: false)
                     self.scheduleReconnect()
                     return
                 }
@@ -231,7 +276,7 @@ public final class RedisSyncService: ObservableObject {
             return
         }
         
-        // RESP array for message: *3\r\n$7\r\nmessage\r\n$<len>\r\n<channel>\r\n$<len>\r\n<payload>\r\n
+        // RESP message format: *3\r\n$7\r\nmessage\r\n$<len>\r\n<channel>\r\n$<len>\r\n<payload>\r\n
         if let msgRange = text.range(of: "message\r\n") {
             let afterMsg = text[msgRange.upperBound...]
             let parts = afterMsg.components(separatedBy: "\r\n")
@@ -252,20 +297,19 @@ public final class RedisSyncService: ObservableObject {
     }
     
     private func handleRemoteSyncMessage(_ message: SyncMessage) {
+        // Prevent loopbacks
         if message.senderDeviceId == self.deviceId {
             return
         }
         
         lastSyncDate = Date()
-        addLog("Received remote action '\(message.action.rawValue)' from \(message.email)", success: true)
-        
         let store = AlarmStore.shared
         
         switch message.action {
         case .syncAll:
             if let incomingAlarms = message.alarms {
                 store.alarms = incomingAlarms
-                addLog("Merged \(incomingAlarms.count) alarms from remote", success: true)
+                addLog("Synced \(incomingAlarms.count) alarms from your other device", success: true)
             }
         case .upsertAlarm:
             if let incoming = message.alarm {
@@ -284,14 +328,14 @@ public final class RedisSyncService: ObservableObject {
             }
         case .remoteTrigger:
             if let incoming = message.alarm {
-                addLog("Triggering remote alarm: \(incoming.title)", success: true)
+                addLog("Remote alarm triggered: \(incoming.title)", success: true)
                 store.triggerAlarm(incoming)
             }
         case .remoteDismiss:
-            addLog("Remote dismiss received", success: true)
+            addLog("Alarm dismissed from other device", success: true)
             store.dismissCurrentlyRinging()
         case .remoteSnooze:
-            addLog("Remote snooze received", success: true)
+            addLog("Alarm snoozed from other device", success: true)
             store.snoozeCurrentlyRinging()
         }
     }
@@ -314,25 +358,35 @@ public final class RedisSyncService: ObservableObject {
             return
         }
         
-        sendPublish(channel: settings.activeChannel, message: jsonString) { [weak self] success, err in
+        let hostStr = serverHost
+        let portInt = serverPort
+        let password = serverPassword
+        let useTLS = serverUseTLS
+        
+        sendPublish(
+            host: hostStr,
+            port: portInt,
+            password: password,
+            useTLS: useTLS,
+            channel: settings.activeChannel,
+            message: jsonString
+        ) { [weak self] success, err in
             Task { @MainActor in
                 if success {
                     self?.lastSyncDate = Date()
-                    self?.addLog("Published '\(action.rawValue)' to cloud", success: true)
-                } else {
-                    self?.addLog("Failed to publish: \(err ?? "unknown")", success: false)
+                } else if let err = err {
+                    self?.addLog("Sync push issue: \(err)", success: false)
                 }
             }
         }
     }
     
-    private func sendPublish(channel: String, message: String, completion: @escaping @Sendable (Bool, String?) -> Void) {
-        let params: NWParameters = settings.useTLS ? .tls : .tcp
-        let host = NWEndpoint.Host(settings.redisHost)
-        let port = NWEndpoint.Port(rawValue: UInt16(settings.redisPort)) ?? 6379
-        let password = settings.redisPassword
+    private func sendPublish(host: String, port: Int, password: String, useTLS: Bool, channel: String, message: String, completion: @escaping @Sendable (Bool, String?) -> Void) {
+        let params: NWParameters = useTLS ? .tls : .tcp
+        let endpointHost = NWEndpoint.Host(host)
+        let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) ?? 6379
         
-        let pubConn = NWConnection(host: host, port: port, using: params)
+        let pubConn = NWConnection(host: endpointHost, port: endpointPort, using: params)
         
         pubConn.stateUpdateHandler = { state in
             switch state {
@@ -373,67 +427,39 @@ public final class RedisSyncService: ObservableObject {
         })
     }
     
-    // MARK: - Manual Test Connection
+    // MARK: - .env Loader
     
-    public func testConnection(completion: @escaping @Sendable (Bool, String) -> Void) {
-        addLog("Testing Redis connection...", success: true)
-        let params: NWParameters = settings.useTLS ? .tls : .tcp
-        let host = NWEndpoint.Host(settings.redisHost)
-        let port = NWEndpoint.Port(rawValue: UInt16(settings.redisPort)) ?? 6379
-        let password = settings.redisPassword
+    private func loadDotEnv() -> [String: String] {
+        var result: [String: String] = [:]
         
-        let testConn = NWConnection(host: host, port: port, using: params)
+        // Search paths
+        let paths = [
+            FileManager.default.currentDirectoryPath + "/.env",
+            (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("com.alarm.macapp/.env").path) ?? "",
+            Bundle.main.resourcePath.map { $0 + "/.env" } ?? ""
+        ]
         
-        testConn.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                if !password.isEmpty {
-                    let authCmd = Self.makeRespCommand(["AUTH", password])
-                    testConn.send(content: authCmd, completion: .contentProcessed { err in
-                        if let err = err {
-                            testConn.cancel()
-                            completion(false, "Authentication error: \(err.localizedDescription)")
-                            return
-                        }
-                        Self.sendPing(testConn: testConn, completion: completion)
-                    })
-                } else {
-                    Self.sendPing(testConn: testConn, completion: completion)
+        for p in paths where !p.isEmpty {
+            if FileManager.default.fileExists(atPath: p), let content = try? String(contentsOfFile: p, encoding: .utf8) {
+                let lines = content.components(separatedBy: .newlines)
+                for line in lines {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    guard !trimmed.hasPrefix("#") && trimmed.contains("=") else { continue }
+                    let parts = trimmed.split(separator: "=", maxSplits: 1).map(String.init)
+                    if parts.count == 2 {
+                        let key = parts[0].trimmingCharacters(in: .whitespaces)
+                        let val = parts[1].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                        result[key] = val
+                    }
                 }
-            case .failed(let error):
-                testConn.cancel()
-                completion(false, "Network connection failed: \(error.localizedDescription)")
-            default:
                 break
             }
         }
         
-        testConn.start(queue: .global(qos: .userInitiated))
+        return result
     }
     
-    nonisolated private static func sendPing(testConn: NWConnection, completion: @escaping @Sendable (Bool, String) -> Void) {
-        let ping = makeRespCommand(["PING"])
-        testConn.send(content: ping, completion: .contentProcessed { error in
-            if let error = error {
-                testConn.cancel()
-                completion(false, "Ping failed: \(error.localizedDescription)")
-                return
-            }
-            
-            testConn.receive(minimumIncompleteLength: 1, maximumLength: 1024) { data, _, _, recErr in
-                testConn.cancel()
-                if let recErr = recErr {
-                    completion(false, "Failed to receive response: \(recErr.localizedDescription)")
-                } else if let data = data, let str = String(data: data, encoding: .utf8), str.contains("PONG") {
-                    completion(true, "Successfully connected to Redis! Server responded with PONG.")
-                } else {
-                    completion(true, "Connected to Redis server successfully.")
-                }
-            }
-        })
-    }
-    
-    // MARK: - RESP Helpers
+    // MARK: - RESP Helper
     
     nonisolated public static func makeRespCommand(_ args: [String]) -> Data {
         var str = "*\(args.count)\r\n"

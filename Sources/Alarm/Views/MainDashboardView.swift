@@ -67,7 +67,7 @@ public struct MainDashboardView: View {
                         Image(systemName: "alarm.fill")
                             .font(.title2)
                             .foregroundColor(.red)
-                        Text("Real Alarm")
+                        Text("MacAlarm Now")
                             .font(.system(size: 22, weight: .black, design: .rounded))
                     }
                     

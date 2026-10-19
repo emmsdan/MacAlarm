@@ -38,7 +38,7 @@ func generateDmgBackground() {
         .font: NSFont.systemFont(ofSize: 26, weight: .black),
         .foregroundColor: NSColor.white
     ]
-    let titleString = NSAttributedString(string: "REAL ALARM FOR macOS", attributes: titleAttrs)
+    let titleString = NSAttributedString(string: "MACALARM NOW", attributes: titleAttrs)
     let titleRect = CGRect(x: (width - titleString.size().width) / 2, y: height - 64, width: titleString.size().width, height: 36)
     titleString.draw(in: titleRect)
     
@@ -58,12 +58,12 @@ func generateDmgBackground() {
         arrow.draw(in: arrowRect, from: .zero, operation: .sourceOver, fraction: 0.85)
     }
     
-    // Bottom instruction: "Drag Alarm to Applications to install"
+    // Bottom instruction: "Drag MacAlarm Now into Applications to install"
     let hintAttrs: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
         .foregroundColor: NSColor.white.withAlphaComponent(0.6)
     ]
-    let hintString = NSAttributedString(string: "Drag Alarm into Applications to install", attributes: hintAttrs)
+    let hintString = NSAttributedString(string: "Drag MacAlarm Now into Applications to install", attributes: hintAttrs)
     let hintRect = CGRect(x: (width - hintString.size().width) / 2, y: 40, width: hintString.size().width, height: 22)
     hintString.draw(in: hintRect)
     
