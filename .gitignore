@@ -11,3 +11,4 @@ DerivedData/
 *.app
 temp_*.dmg
 dmg_staging/
+.env
