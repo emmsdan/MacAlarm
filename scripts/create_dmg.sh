@@ -91,11 +91,27 @@ sleep 2
 # 8. Unmount
 echo "Unmounting volume..."
 hdiutil detach "$MOUNT_DIR" -force || true
-sleep 1
+sleep 3
 
 # 9. Compress to final distribution DMG
 echo "=== Compressing to Final UDZO DMG: $DMG_NAME ==="
-hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG_NAME"
+rm -f "$DMG_NAME"
+
+CONVERT_SUCCESS=false
+for i in 1 2 3 4 5; do
+    if hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG_NAME"; then
+        CONVERT_SUCCESS=true
+        break
+    else
+        echo "Waiting for disk resource to become available (attempt $i/5)..."
+        sleep 2
+    fi
+done
+
+if [ "$CONVERT_SUCCESS" = false ]; then
+    echo "Error: Failed to convert DMG after multiple attempts."
+    exit 1
+fi
 
 # 10. Clean up
 rm -rf "$STAGING_DIR" "$TMP_DMG"
