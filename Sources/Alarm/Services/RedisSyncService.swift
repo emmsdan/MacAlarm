@@ -38,45 +38,68 @@ public final class RedisSyncService: ObservableObject {
     private var reconnectTimer: Timer?
     private var incomingBuffer = Data()
     
-    // MARK: - Server Configuration from Environment
+    // MARK: - Server Configuration from Environment / URL
     
-    public var serverHost: String {
-        if let custom = settings.customHost, !custom.isEmpty { return custom }
-        if let host = ProcessInfo.processInfo.environment["REDIS_HOST"], !host.isEmpty {
-            return host
-        }
-        return loadDotEnv()["REDIS_HOST"] ?? "127.0.0.1"
+    public struct RedisConnectionConfig {
+        public let host: String
+        public let port: Int
+        public let password: String
+        public let useTLS: Bool
     }
     
-    public var serverPort: Int {
-        if let custom = settings.customPort, custom > 0 { return custom }
-        if let portStr = ProcessInfo.processInfo.environment["REDIS_PORT"], let p = Int(portStr) {
-            return p
+    public var connectionConfig: RedisConnectionConfig {
+        let env = ProcessInfo.processInfo.environment
+        let dot = loadDotEnv()
+        
+        // 1. Check for REDIS_URL first (from environment or .env)
+        let rawUrl = env["REDIS_URL"] ?? dot["REDIS_URL"]
+        if let rawUrl = rawUrl, !rawUrl.trimmingCharacters(in: .whitespaces).isEmpty,
+           let components = URLComponents(string: rawUrl.trimmingCharacters(in: .whitespaces)) {
+            let scheme = components.scheme?.lowercased() ?? "redis"
+            let useTLS = (scheme == "rediss")
+            let host = components.host ?? "127.0.0.1"
+            let port = components.port ?? (useTLS ? 6380 : 6379)
+            var password = components.password ?? ""
+            if password.isEmpty, let user = components.user, !user.isEmpty {
+                password = user
+            }
+            return RedisConnectionConfig(host: host, port: port, password: password, useTLS: useTLS)
         }
-        if let dotP = loadDotEnv()["REDIS_PORT"], let p = Int(dotP) {
-            return p
+        
+        // 2. Fall back to individual components (with custom settings overrides if present)
+        let host = settings.customHost ?? env["REDIS_HOST"] ?? dot["REDIS_HOST"] ?? "127.0.0.1"
+        
+        let portInt: Int
+        if let custom = settings.customPort, custom > 0 {
+            portInt = custom
+        } else if let pStr = env["REDIS_PORT"], let p = Int(pStr) {
+            portInt = p
+        } else if let pStr = dot["REDIS_PORT"], let p = Int(pStr) {
+            portInt = p
+        } else {
+            portInt = 6379
         }
-        return 6379
+        
+        let password = settings.customPassword ?? env["REDIS_PASSWORD"] ?? dot["REDIS_PASSWORD"] ?? ""
+        
+        let useTLS: Bool
+        if let custom = settings.customUseTLS {
+            useTLS = custom
+        } else if let tlsStr = env["REDIS_TLS"] {
+            useTLS = (tlsStr == "1" || tlsStr.lowercased() == "true")
+        } else if let tlsStr = dot["REDIS_TLS"] {
+            useTLS = (tlsStr == "1" || tlsStr.lowercased() == "true")
+        } else {
+            useTLS = false
+        }
+        
+        return RedisConnectionConfig(host: host, port: portInt, password: password, useTLS: useTLS)
     }
     
-    public var serverPassword: String {
-        if let custom = settings.customPassword { return custom }
-        if let pass = ProcessInfo.processInfo.environment["REDIS_PASSWORD"] {
-            return pass
-        }
-        return loadDotEnv()["REDIS_PASSWORD"] ?? ""
-    }
-    
-    public var serverUseTLS: Bool {
-        if let custom = settings.customUseTLS { return custom }
-        if let tlsStr = ProcessInfo.processInfo.environment["REDIS_TLS"] {
-            return tlsStr == "1" || tlsStr.lowercased() == "true"
-        }
-        if let dotTls = loadDotEnv()["REDIS_TLS"] {
-            return dotTls == "1" || dotTls.lowercased() == "true"
-        }
-        return false
-    }
+    public var serverHost: String { connectionConfig.host }
+    public var serverPort: Int { connectionConfig.port }
+    public var serverPassword: String { connectionConfig.password }
+    public var serverUseTLS: Bool { connectionConfig.useTLS }
     
     private init() {
         // Load device ID
@@ -432,12 +455,21 @@ public final class RedisSyncService: ObservableObject {
     private func loadDotEnv() -> [String: String] {
         var result: [String: String] = [:]
         
-        // Search paths
-        let paths = [
-            FileManager.default.currentDirectoryPath + "/.env",
-            (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("com.alarm.macapp/.env").path) ?? "",
-            Bundle.main.resourcePath.map { $0 + "/.env" } ?? ""
-        ]
+        // Comprehensive search paths for .env across bundle resources, current dir, home, and app support
+        var paths: [String] = []
+        if let resPath = Bundle.main.resourcePath {
+            paths.append(resPath + "/.env")
+        }
+        paths.append(Bundle.main.bundlePath + "/Contents/Resources/.env")
+        paths.append(Bundle.main.bundlePath + "/.env")
+        paths.append(FileManager.default.currentDirectoryPath + "/.env")
+        paths.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".macalarm.env").path)
+        paths.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".env").path)
+        if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            paths.append(appSupport.appendingPathComponent("MacAlarm Now/.env").path)
+            paths.append(appSupport.appendingPathComponent("com.alarm.macapp/.env").path)
+        }
+        paths.append("/Users/emmsdan/Repo/hexify/alarm/.env")
         
         for p in paths where !p.isEmpty {
             if FileManager.default.fileExists(atPath: p), let content = try? String(contentsOfFile: p, encoding: .utf8) {
@@ -449,10 +481,14 @@ public final class RedisSyncService: ObservableObject {
                     if parts.count == 2 {
                         let key = parts[0].trimmingCharacters(in: .whitespaces)
                         let val = parts[1].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                        result[key] = val
+                        if result[key] == nil {
+                            result[key] = val
+                        }
                     }
                 }
-                break
+                if !result.isEmpty {
+                    break
+                }
             }
         }
         

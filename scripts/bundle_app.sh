@@ -22,8 +22,27 @@ mkdir -p "$APP_NAME/Contents/MacOS"
 mkdir -p "$APP_NAME/Contents/Resources"
 
 # 3. Copy binary
-cp .build/release/Alarm "$APP_NAME/Contents/MacOS/MacAlarm"
+BIN_PATH=$(swift build -c release --show-bin-path)
+if [ -f "$BIN_PATH/MacAlarm" ]; then
+    echo "✓ Found binary at $BIN_PATH/MacAlarm"
+    cp "$BIN_PATH/MacAlarm" "$APP_NAME/Contents/MacOS/MacAlarm"
+elif [ -f "$BIN_PATH/Alarm" ]; then
+    echo "✓ Found binary at $BIN_PATH/Alarm"
+    cp "$BIN_PATH/Alarm" "$APP_NAME/Contents/MacOS/MacAlarm"
+elif [ -f ".build/release/MacAlarm" ]; then
+    echo "✓ Found binary at .build/release/MacAlarm"
+    cp ".build/release/MacAlarm" "$APP_NAME/Contents/MacOS/MacAlarm"
+else
+    echo "Error: Could not locate built release binary in $BIN_PATH"
+    exit 1
+fi
 chmod +x "$APP_NAME/Contents/MacOS/MacAlarm"
+
+# 3b. Embed .env into App Bundle Resources
+if [ -f ".env" ]; then
+    cp .env "$APP_NAME/Contents/Resources/.env"
+    echo "✓ Embedded build-time .env into $APP_NAME/Contents/Resources/.env"
+fi
 
 # 4. Generate Icon
 echo "=== Generating App Icons ==="

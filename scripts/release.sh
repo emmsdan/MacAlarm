@@ -57,9 +57,19 @@ chmod +x scripts/create_dmg.sh
 
 DMG_FILE="MacAlarm-${NEW_VERSION}.dmg"
 
-# 6. Git commit & tag if git repository
+# 6. Auto-update /Applications/MacAlarm Now.app if previously installed
+if [ -d "/Applications/MacAlarm Now.app" ]; then
+    echo "=== Updating /Applications/MacAlarm Now.app ==="
+    pkill -f "MacAlarm" || true
+    rm -rf "/Applications/MacAlarm Now.app"
+    cp -R "MacAlarm Now.app" "/Applications/"
+    echo "✓ Updated /Applications/MacAlarm Now.app to v$NEW_VERSION"
+fi
+
+# 7. Git commit & tag if git repository
 if [ -d ".git" ]; then
     echo "=== Creating Git Commit & Tag for v$NEW_VERSION ==="
+    git add -u 2>/dev/null || true
     git add "$VERSION_FILE" "README.md" 2>/dev/null || true
     if git diff --staged --quiet; then
         echo "No additional git changes to stage."
