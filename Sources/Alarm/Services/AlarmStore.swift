@@ -11,13 +11,17 @@ public final class AlarmStore: ObservableObject {
     
     private var timer: Timer?
     private let saveFileURL: URL
+    private let deletedFileURL: URL
+    public private(set) var deletedAlarmIds: [String: TimeInterval] = [:]
     
     public init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("com.alarm.macapp", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         self.saveFileURL = dir.appendingPathComponent("alarms.json")
+        self.deletedFileURL = dir.appendingPathComponent("deleted_alarms.json")
         
+        loadDeletedAlarms()
         loadAlarms()
         startHeartbeat()
     }
@@ -125,9 +129,10 @@ public final class AlarmStore: ObservableObject {
                 // One-time alarm gets turned off after dismissal
                 updated.isEnabled = false
             }
+            updated.updatedAt = Date()
             alarms[idx] = updated
             saveAlarms()
-            RedisSyncService.shared.publishAlarmChange(action: .remoteDismiss, alarm: updated, allAlarms: alarms)
+            RedisSyncService.shared.pushAlarmsToRedis(alarms, action: .remoteDismiss, triggeredAlarm: updated)
         }
         
         self.currentlyRingingAlarm = nil
@@ -147,9 +152,10 @@ public final class AlarmStore: ObservableObject {
             var updated = alarms[idx]
             updated.isSnoozed = true
             updated.snoozeUntil = snoozeDate
+            updated.updatedAt = Date()
             alarms[idx] = updated
             saveAlarms()
-            RedisSyncService.shared.publishAlarmChange(action: .remoteSnooze, alarm: updated, allAlarms: alarms)
+            RedisSyncService.shared.pushAlarmsToRedis(alarms, action: .remoteSnooze, triggeredAlarm: updated)
         }
         
         self.currentlyRingingAlarm = nil
@@ -158,26 +164,35 @@ public final class AlarmStore: ObservableObject {
     // MARK: - CRUD
     
     public func addAlarm(_ alarm: AlarmItem) {
-        alarms.append(alarm)
+        var updated = alarm
+        updated.updatedAt = Date()
+        deletedAlarmIds.removeValue(forKey: updated.id.uuidString)
+        saveDeletedAlarms()
+        
+        alarms.append(updated)
         sortAlarms()
         saveAlarms()
-        RedisSyncService.shared.publishAlarmChange(action: .upsertAlarm, alarm: alarm, allAlarms: alarms)
+        RedisSyncService.shared.pushAlarmsToRedis(alarms, action: .upsertAlarm, triggeredAlarm: updated)
     }
     
     public func updateAlarm(_ alarm: AlarmItem) {
         if let idx = alarms.firstIndex(where: { $0.id == alarm.id }) {
-            alarms[idx] = alarm
+            var updated = alarm
+            updated.updatedAt = Date()
+            alarms[idx] = updated
             sortAlarms()
             saveAlarms()
-            RedisSyncService.shared.publishAlarmChange(action: .upsertAlarm, alarm: alarm, allAlarms: alarms)
+            RedisSyncService.shared.pushAlarmsToRedis(alarms, action: .upsertAlarm, triggeredAlarm: updated)
         }
     }
     
     public func deleteAlarm(id: UUID) {
         if let target = alarms.first(where: { $0.id == id }) {
             alarms.removeAll { $0.id == id }
+            deletedAlarmIds[id.uuidString] = Date().timeIntervalSince1970
+            saveDeletedAlarms()
             saveAlarms()
-            RedisSyncService.shared.publishAlarmChange(action: .deleteAlarm, alarm: target, allAlarms: alarms)
+            RedisSyncService.shared.pushAlarmsToRedis(alarms, action: .deleteAlarm, triggeredAlarm: target)
         }
     }
     
@@ -188,17 +203,103 @@ public final class AlarmStore: ObservableObject {
                 alarms[idx].isSnoozed = false
                 alarms[idx].snoozeUntil = nil
             }
+            alarms[idx].updatedAt = Date()
             let updated = alarms[idx]
             saveAlarms()
-            RedisSyncService.shared.publishAlarmChange(action: .upsertAlarm, alarm: updated, allAlarms: alarms)
+            RedisSyncService.shared.pushAlarmsToRedis(alarms, action: .upsertAlarm, triggeredAlarm: updated)
         }
     }
     
     public func syncAllToRemote() {
-        RedisSyncService.shared.publishAlarmChange(action: .syncAll, allAlarms: alarms)
+        RedisSyncService.shared.pushAlarmsToRedis(alarms, action: .syncAll)
     }
     
-    private func sortAlarms() {
+    // MARK: - Remote Merging
+    
+    public func mergeRemoteAlarms(
+        _ remoteAlarms: [AlarmItem],
+        remoteLastUpdated: Date? = nil,
+        remoteDeviceId: String? = nil,
+        remoteDeletedIds: [String: TimeInterval]? = nil
+    ) {
+        // Ignore loopback if sender is this device
+        if let devId = remoteDeviceId, devId == RedisSyncService.shared.deviceId {
+            return
+        }
+        
+        // 1. Merge tombstones
+        if let remoteDeleted = remoteDeletedIds {
+            for (idStr, timestamp) in remoteDeleted {
+                if let existing = deletedAlarmIds[idStr] {
+                    deletedAlarmIds[idStr] = max(existing, timestamp)
+                } else {
+                    deletedAlarmIds[idStr] = timestamp
+                }
+            }
+            saveDeletedAlarms()
+        }
+        
+        var merged = alarms
+        var hasRemoteUpdates = false
+        var hasLocalAhead = false
+        
+        // 2. Remove any local alarms that were deleted remotely
+        merged.removeAll { alarm in
+            if let delTime = deletedAlarmIds[alarm.id.uuidString] {
+                let alarmTime = alarm.safeUpdatedAt.timeIntervalSince1970
+                if delTime >= alarmTime {
+                    hasRemoteUpdates = true
+                    return true
+                }
+            }
+            return false
+        }
+        
+        // 3. Process remote alarms
+        for remote in remoteAlarms {
+            let remoteIdStr = remote.id.uuidString
+            if let delTime = deletedAlarmIds[remoteIdStr] {
+                let remoteTime = remote.safeUpdatedAt.timeIntervalSince1970
+                if delTime >= remoteTime {
+                    continue
+                }
+            }
+            
+            if let localIdx = merged.firstIndex(where: { $0.id == remote.id }) {
+                let local = merged[localIdx]
+                if remote.safeUpdatedAt > local.safeUpdatedAt {
+                    merged[localIdx] = remote
+                    hasRemoteUpdates = true
+                } else if local.safeUpdatedAt > remote.safeUpdatedAt {
+                    hasLocalAhead = true
+                }
+            } else {
+                merged.append(remote)
+                hasRemoteUpdates = true
+            }
+        }
+        
+        // 4. Check if local has items that remote lacks (created offline)
+        for local in alarms {
+            if !remoteAlarms.contains(where: { $0.id == local.id }) && deletedAlarmIds[local.id.uuidString] == nil {
+                hasLocalAhead = true
+            }
+        }
+        
+        if hasRemoteUpdates {
+            self.alarms = merged
+            sortAlarms()
+            saveAlarms()
+            NotificationCenter.default.post(name: .alarmsUpdatedFromRemote, object: nil)
+        }
+        
+        // 5. If local had newer changes, push the complete merged set to Redis so remote catches up
+        if hasLocalAhead {
+            RedisSyncService.shared.pushAlarmsToRedis(self.alarms, action: .syncAll)
+        }
+    }
+    
+    public func sortAlarms() {
         alarms.sort { (a, b) -> Bool in
             if a.hour != b.hour {
                 return a.hour < b.hour
@@ -292,12 +393,34 @@ public final class AlarmStore: ObservableObject {
         saveAlarms()
     }
     
-    private func saveAlarms() {
+    public func saveAlarms() {
         do {
             let data = try JSONEncoder().encode(alarms)
             try data.write(to: saveFileURL, options: .atomic)
         } catch {
             print("Failed to save alarms: \(error)")
+        }
+    }
+    
+    private func loadDeletedAlarms() {
+        guard FileManager.default.fileExists(atPath: deletedFileURL.path) else { return }
+        do {
+            let data = try Data(contentsOf: deletedFileURL)
+            let decoded = try JSONDecoder().decode([String: TimeInterval].self, from: data)
+            // Prune tombstones older than 30 days
+            let cutoff = Date().addingTimeInterval(-30 * 24 * 3600).timeIntervalSince1970
+            self.deletedAlarmIds = decoded.filter { $0.value > cutoff }
+        } catch {
+            print("Failed to load deleted alarms: \(error)")
+        }
+    }
+    
+    private func saveDeletedAlarms() {
+        do {
+            let data = try JSONEncoder().encode(deletedAlarmIds)
+            try data.write(to: deletedFileURL, options: .atomic)
+        } catch {
+            print("Failed to save deleted alarms: \(error)")
         }
     }
 }

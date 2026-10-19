@@ -84,6 +84,7 @@ public struct AlarmItem: Identifiable, Codable, Equatable, Sendable {
     public var isSnoozed: Bool
     public var snoozeUntil: Date?
     public var lastTriggeredDate: Date?
+    public var updatedAt: Date?
     
     public init(
         id: UUID = UUID(),
@@ -100,7 +101,8 @@ public struct AlarmItem: Identifiable, Codable, Equatable, Sendable {
         snoozeMinutes: Int = 9,
         isSnoozed: Bool = false,
         snoozeUntil: Date? = nil,
-        lastTriggeredDate: Date? = nil
+        lastTriggeredDate: Date? = nil,
+        updatedAt: Date? = Date()
     ) {
         self.id = id
         self.title = title
@@ -117,6 +119,11 @@ public struct AlarmItem: Identifiable, Codable, Equatable, Sendable {
         self.isSnoozed = isSnoozed
         self.snoozeUntil = snoozeUntil
         self.lastTriggeredDate = lastTriggeredDate
+        self.updatedAt = updatedAt ?? Date()
+    }
+    
+    public var safeUpdatedAt: Date {
+        return updatedAt ?? Date.distantPast
     }
     
     public var formattedTime: String {

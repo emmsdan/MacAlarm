@@ -6,7 +6,7 @@ public enum SyncConnectionStatus: String, Sendable {
     case disconnected = "Offline"
     case connecting = "Connecting..."
     case connected = "Synced & Ready"
-    case error = "Sync Unavailable"
+    case error = "Sync Paused"
     case disabled = "Disabled"
     
     public var iconName: String {
@@ -28,6 +28,7 @@ public final class RedisSyncService: ObservableObject {
     @Published public var status: SyncConnectionStatus = .disabled
     @Published public var lastSyncDate: Date? = nil
     @Published public var syncLogs: [SyncLogEntry] = []
+    @Published public var isSyncing: Bool = false
     
     public let deviceId: String
     private let settingsKey = "com.alarm.syncSettings"
@@ -36,7 +37,14 @@ public final class RedisSyncService: ObservableObject {
     private var subscriberConnection: NWConnection?
     private var isSubscribed: Bool = false
     private var reconnectTimer: Timer?
+    private var autoSyncTimer: Timer?
     private var incomingBuffer = Data()
+    
+    // Auto-sync & Backoff state (10-15s standard interval, exponential backoff on failure)
+    private var currentSyncInterval: TimeInterval = 12.0
+    private var consecutiveFailures: Int = 0
+    private var isPullingInProgress: Bool = false
+    private var isPushingInProgress: Bool = false
     
     // MARK: - Server Configuration from Environment / URL
     
@@ -121,6 +129,7 @@ public final class RedisSyncService: ObservableObject {
         
         if settings.isEnabled && !settings.email.trimmingCharacters(in: .whitespaces).isEmpty {
             connectSubscriber()
+            startAutoSyncLoop()
         } else {
             self.status = .disabled
         }
@@ -139,10 +148,12 @@ public final class RedisSyncService: ObservableObject {
         
         if !newSettings.isEnabled {
             disconnectSubscriber()
+            stopAutoSyncLoop()
             status = .disabled
             addLog("Cloud sync turned off", success: true)
         } else if !wasEnabled || emailChanged || !isSubscribed {
             reconnect()
+            startAutoSyncLoop()
         }
     }
     
@@ -156,7 +167,7 @@ public final class RedisSyncService: ObservableObject {
         }
     }
     
-    // MARK: - Subscriber Connection
+    // MARK: - Subscriber Connection (Real-time Pub/Sub)
     
     public func reconnect() {
         disconnectSubscriber()
@@ -198,14 +209,11 @@ public final class RedisSyncService: ObservableObject {
                 case .ready:
                     self.handleSubscriberReady(conn)
                 case .failed(let error):
-                    self.status = .error
-                    self.addLog("Sync paused: \(error.localizedDescription)", success: false)
-                    self.scheduleReconnect()
+                    self.handleSubscriberFailure(error)
                 case .cancelled:
                     self.isSubscribed = false
                 case .waiting(let error):
-                    self.status = .error
-                    self.addLog("Network waiting: \(error.localizedDescription)", success: false)
+                    self.handleSubscriberFailure(error)
                 default:
                     break
                 }
@@ -213,6 +221,12 @@ public final class RedisSyncService: ObservableObject {
         }
         
         conn.start(queue: .global(qos: .userInitiated))
+    }
+    
+    private func handleSubscriberFailure(_ error: Error) {
+        self.status = .disconnected
+        self.isSubscribed = false
+        self.scheduleSubscriberReconnect()
     }
     
     private func handleSubscriberReady(_ conn: NWConnection) {
@@ -242,17 +256,21 @@ public final class RedisSyncService: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 if let error = error {
-                    self.status = .error
-                    self.addLog("Subscription failed: \(error.localizedDescription)", success: false)
-                    self.scheduleReconnect()
+                    self.status = .disconnected
+                    self.addLog("Subscription disconnected: \(error.localizedDescription)", success: false)
+                    self.scheduleSubscriberReconnect()
                     return
                 }
                 
                 self.isSubscribed = true
                 self.status = .connected
                 self.lastSyncDate = Date()
+                self.consecutiveFailures = 0
                 self.addLog("Connected to cloud sync", success: true)
                 self.listenForMessages(conn)
+                
+                // On subscriber connection, immediately pull latest persistent state!
+                self.pullLatestFromRedis()
             }
         })
     }
@@ -262,9 +280,9 @@ public final class RedisSyncService: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 if let error = error {
-                    self.status = .error
-                    self.addLog("Connection dropped: \(error.localizedDescription)", success: false)
-                    self.scheduleReconnect()
+                    self.isSubscribed = false
+                    self.addLog("Cloud stream paused: \(error.localizedDescription)", success: false)
+                    self.scheduleSubscriberReconnect()
                     return
                 }
                 
@@ -279,9 +297,10 @@ public final class RedisSyncService: ObservableObject {
         }
     }
     
-    private func scheduleReconnect() {
+    private func scheduleSubscriberReconnect() {
         reconnectTimer?.invalidate()
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+        let delay = min(5.0 * pow(1.5, Double(consecutiveFailures)), 60.0)
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 if self?.settings.isEnabled == true {
                     self?.connectSubscriber()
@@ -290,7 +309,7 @@ public final class RedisSyncService: ObservableObject {
         }
     }
     
-    // MARK: - Incoming Data & Parsing
+    // MARK: - Incoming Real-Time Messages
     
     private func processIncomingData(_ data: Data) {
         incomingBuffer.append(data)
@@ -331,22 +350,26 @@ public final class RedisSyncService: ObservableObject {
         switch message.action {
         case .syncAll:
             if let incomingAlarms = message.alarms {
-                store.alarms = incomingAlarms
-                addLog("Synced \(incomingAlarms.count) alarms from your other device", success: true)
+                store.mergeRemoteAlarms(incomingAlarms, remoteLastUpdated: Date(timeIntervalSince1970: message.timestamp), remoteDeviceId: message.senderDeviceId)
+                addLog("Synced \(incomingAlarms.count) alarms from remote", success: true)
             }
         case .upsertAlarm:
             if let incoming = message.alarm {
                 if let idx = store.alarms.firstIndex(where: { $0.id == incoming.id }) {
                     store.alarms[idx] = incoming
+                    store.sortAlarms()
+                    store.saveAlarms()
                     addLog("Updated alarm '\(incoming.title)' from remote", success: true)
                 } else {
                     store.alarms.append(incoming)
+                    store.sortAlarms()
+                    store.saveAlarms()
                     addLog("Added new alarm '\(incoming.title)' from remote", success: true)
                 }
             }
         case .deleteAlarm:
             if let incoming = message.alarm {
-                store.alarms.removeAll { $0.id == incoming.id }
+                store.deleteAlarm(id: incoming.id)
                 addLog("Deleted alarm from remote", success: true)
             }
         case .remoteTrigger:
@@ -363,91 +386,411 @@ public final class RedisSyncService: ObservableObject {
         }
     }
     
-    // MARK: - Publishing Local Events
+    // MARK: - Automatic Polling & Exponential Backoff Loop
     
-    public func publishAlarmChange(action: SyncAction, alarm: AlarmItem? = nil, allAlarms: [AlarmItem]? = nil) {
-        guard settings.isEnabled, !settings.email.isEmpty else { return }
+    public func startAutoSyncLoop() {
+        stopAutoSyncLoop()
+        guard settings.isEnabled, !settings.email.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        
+        scheduleNextAutoSync(interval: currentSyncInterval)
+    }
+    
+    public func stopAutoSyncLoop() {
+        autoSyncTimer?.invalidate()
+        autoSyncTimer = nil
+    }
+    
+    private func scheduleNextAutoSync(interval: TimeInterval) {
+        autoSyncTimer?.invalidate()
+        autoSyncTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, self.settings.isEnabled else { return }
+                self.pullLatestFromRedis()
+            }
+        }
+    }
+    
+    private func handleSyncFailure(_ error: Error?) {
+        consecutiveFailures += 1
+        
+        // Exponential backoff: 15s * 1.5^failures capped at 120s
+        let backoff = min(15.0 * pow(1.5, Double(consecutiveFailures)), 120.0)
+        currentSyncInterval = backoff
+        
+        self.status = .disconnected
+        scheduleNextAutoSync(interval: backoff)
+        
+        if consecutiveFailures <= 3 {
+            addLog("Cloud unreachable, retrying in \(Int(backoff))s", success: false)
+        }
+    }
+    
+    private func handleSyncSuccess() {
+        consecutiveFailures = 0
+        currentSyncInterval = 12.0 // Standard 10-15s interval
+        self.status = .connected
+        self.lastSyncDate = Date()
+        scheduleNextAutoSync(interval: 12.0)
+    }
+    
+    // MARK: - Manual Immediate Sync
+    
+    public func syncNow() {
+        consecutiveFailures = 0
+        currentSyncInterval = 12.0
+        pullLatestFromRedis { [weak self] _ in
+            Task { @MainActor in
+                self?.pushAlarmsToRedis(AlarmStore.shared.alarms, action: .syncAll)
+            }
+        }
+    }
+    
+    // MARK: - Persistent Key-Value Push (SET + PUBLISH)
+    
+    public func pushAlarmsToRedis(
+        _ alarms: [AlarmItem],
+        action: SyncAction = .syncAll,
+        triggeredAlarm: AlarmItem? = nil,
+        completion: (@Sendable (Bool) -> Void)? = nil
+    ) {
+        guard settings.isEnabled, !settings.email.isEmpty else {
+            completion?(true)
+            return
+        }
+        
+        let container = RemoteSyncContainer(
+            lastUpdated: Date(),
+            deviceId: self.deviceId,
+            email: settings.email,
+            alarms: alarms,
+            deletedAlarmIds: AlarmStore.shared.deletedAlarmIds
+        )
+        
+        guard let containerData = try? JSONEncoder().encode(container),
+              let containerJson = String(data: containerData, encoding: .utf8) else {
+            completion?(false)
+            return
+        }
         
         let syncMsg = SyncMessage(
             senderDeviceId: self.deviceId,
             email: settings.email,
             action: action,
-            alarm: alarm,
-            alarms: allAlarms
+            alarm: triggeredAlarm,
+            alarms: alarms
         )
         
-        guard let jsonData = try? JSONEncoder().encode(syncMsg),
-              let jsonString = String(data: jsonData, encoding: .utf8) else {
-            return
+        let msgJson: String
+        if let msgData = try? JSONEncoder().encode(syncMsg), let str = String(data: msgData, encoding: .utf8) {
+            msgJson = str
+        } else {
+            msgJson = "{}"
         }
         
         let hostStr = serverHost
         let portInt = serverPort
         let password = serverPassword
         let useTLS = serverUseTLS
+        let dataKey = settings.activeDataKey
+        let channel = settings.activeChannel
         
-        sendPublish(
+        sendSetAndPublish(
             host: hostStr,
             port: portInt,
             password: password,
             useTLS: useTLS,
-            channel: settings.activeChannel,
-            message: jsonString
+            dataKey: dataKey,
+            containerJson: containerJson,
+            channel: channel,
+            msgJson: msgJson
         ) { [weak self] success, err in
             Task { @MainActor in
+                guard let self = self else { return }
                 if success {
-                    self?.lastSyncDate = Date()
-                } else if let err = err {
-                    self?.addLog("Sync push issue: \(err)", success: false)
+                    self.handleSyncSuccess()
+                    completion?(true)
+                } else {
+                    if let err = err {
+                        self.handleSyncFailure(NSError(domain: "RedisSync", code: -1, userInfo: [NSLocalizedDescriptionKey: err]))
+                    }
+                    completion?(false)
                 }
             }
         }
     }
     
-    private func sendPublish(host: String, port: Int, password: String, useTLS: Bool, channel: String, message: String, completion: @escaping @Sendable (Bool, String?) -> Void) {
+    // Backward compatibility alias
+    public func publishAlarmChange(action: SyncAction, alarm: AlarmItem? = nil, allAlarms: [AlarmItem]? = nil) {
+        pushAlarmsToRedis(allAlarms ?? AlarmStore.shared.alarms, action: action, triggeredAlarm: alarm)
+    }
+    
+    private func sendSetAndPublish(
+        host: String,
+        port: Int,
+        password: String,
+        useTLS: Bool,
+        dataKey: String,
+        containerJson: String,
+        channel: String,
+        msgJson: String,
+        completion: @escaping @Sendable (Bool, String?) -> Void
+    ) {
         let params: NWParameters = useTLS ? .tls : .tcp
         let endpointHost = NWEndpoint.Host(host)
         let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) ?? 6379
         
-        let pubConn = NWConnection(host: endpointHost, port: endpointPort, using: params)
+        let conn = NWConnection(host: endpointHost, port: endpointPort, using: params)
+        let flag = AtomicFlag()
         
-        pubConn.stateUpdateHandler = { state in
+        let finishOnce: @Sendable (Bool, String?) -> Void = { success, msg in
+            flag.executeOnce {
+                conn.cancel()
+                completion(success, msg)
+            }
+        }
+        
+        // 6 second timeout
+        DispatchQueue.global().asyncAfter(deadline: .now() + 6.0) {
+            finishOnce(false, "Push connection timed out")
+        }
+        
+        conn.stateUpdateHandler = { state in
             switch state {
             case .ready:
                 if !password.isEmpty {
                     let authCmd = Self.makeRespCommand(["AUTH", password])
-                    pubConn.send(content: authCmd, completion: .contentProcessed { authErr in
+                    conn.send(content: authCmd, completion: .contentProcessed { authErr in
                         if let authErr = authErr {
-                            pubConn.cancel()
-                            completion(false, authErr.localizedDescription)
+                            finishOnce(false, authErr.localizedDescription)
                             return
                         }
-                        Self.executePublish(pubConn: pubConn, channel: channel, message: message, completion: completion)
+                        Self.sendSetAndPublishPayload(conn: conn, dataKey: dataKey, containerJson: containerJson, channel: channel, msgJson: msgJson, finish: finishOnce)
                     })
                 } else {
-                    Self.executePublish(pubConn: pubConn, channel: channel, message: message, completion: completion)
+                    Self.sendSetAndPublishPayload(conn: conn, dataKey: dataKey, containerJson: containerJson, channel: channel, msgJson: msgJson, finish: finishOnce)
                 }
             case .failed(let error):
-                pubConn.cancel()
-                completion(false, error.localizedDescription)
+                finishOnce(false, error.localizedDescription)
             default:
                 break
             }
         }
         
-        pubConn.start(queue: .global(qos: .userInitiated))
+        conn.start(queue: .global(qos: .userInitiated))
     }
     
-    nonisolated private static func executePublish(pubConn: NWConnection, channel: String, message: String, completion: @escaping @Sendable (Bool, String?) -> Void) {
-        let cmd = makeRespCommand(["PUBLISH", channel, message])
-        pubConn.send(content: cmd, completion: .contentProcessed { error in
-            pubConn.cancel()
+    nonisolated private static func sendSetAndPublishPayload(
+        conn: NWConnection,
+        dataKey: String,
+        containerJson: String,
+        channel: String,
+        msgJson: String,
+        finish: @escaping @Sendable (Bool, String?) -> Void
+    ) {
+        var combined = Data()
+        combined.append(makeRespCommand(["SET", dataKey, containerJson]))
+        combined.append(makeRespCommand(["PUBLISH", channel, msgJson]))
+        
+        conn.send(content: combined, completion: .contentProcessed { error in
             if let error = error {
-                completion(false, error.localizedDescription)
+                finish(false, error.localizedDescription)
             } else {
-                completion(true, nil)
+                finish(true, nil)
             }
         })
+    }
+    
+    // MARK: - Persistent Key-Value Pull (GET)
+    
+    public func pullLatestFromRedis(completion: (@Sendable (Bool) -> Void)? = nil) {
+        guard settings.isEnabled, !settings.email.isEmpty else {
+            completion?(false)
+            return
+        }
+        guard !isPullingInProgress else {
+            completion?(false)
+            return
+        }
+        
+        isPullingInProgress = true
+        isSyncing = true
+        
+        let hostStr = serverHost
+        let portInt = serverPort
+        let password = serverPassword
+        let useTLS = serverUseTLS
+        let dataKey = settings.activeDataKey
+        
+        fetchRedisBulkString(
+            host: hostStr,
+            port: portInt,
+            password: password,
+            useTLS: useTLS,
+            key: dataKey
+        ) { [weak self] result in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.isPullingInProgress = false
+                self.isSyncing = false
+                
+                switch result {
+                case .success(let payloadData):
+                    if let data = payloadData {
+                        // Decode RemoteSyncContainer or fallback [AlarmItem]
+                        if let container = try? JSONDecoder().decode(RemoteSyncContainer.self, from: data) {
+                            AlarmStore.shared.mergeRemoteAlarms(
+                                container.alarms,
+                                remoteLastUpdated: container.lastUpdated,
+                                remoteDeviceId: container.deviceId,
+                                remoteDeletedIds: container.deletedAlarmIds
+                            )
+                        } else if let legacyAlarms = try? JSONDecoder().decode([AlarmItem].self, from: data) {
+                            AlarmStore.shared.mergeRemoteAlarms(legacyAlarms)
+                        }
+                    } else {
+                        // Key does not exist in Redis yet: seed Redis with local alarms
+                        if !AlarmStore.shared.alarms.isEmpty {
+                            self.pushAlarmsToRedis(AlarmStore.shared.alarms, action: .syncAll)
+                        }
+                    }
+                    
+                    self.handleSyncSuccess()
+                    completion?(true)
+                    
+                case .failure(let error):
+                    self.handleSyncFailure(error)
+                    completion?(false)
+                }
+            }
+        }
+    }
+    
+    private func fetchRedisBulkString(
+        host: String,
+        port: Int,
+        password: String,
+        useTLS: Bool,
+        key: String,
+        completion: @escaping @Sendable (Result<Data?, Error>) -> Void
+    ) {
+        let params: NWParameters = useTLS ? .tls : .tcp
+        let endpointHost = NWEndpoint.Host(host)
+        let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) ?? 6379
+        
+        let conn = NWConnection(host: endpointHost, port: endpointPort, using: params)
+        let flag = AtomicFlag()
+        
+        let finishOnce: @Sendable (Result<Data?, Error>) -> Void = { result in
+            flag.executeOnce {
+                conn.cancel()
+                completion(result)
+            }
+        }
+        
+        // 6-second timeout so app is 99% offline and non-blocking
+        DispatchQueue.global().asyncAfter(deadline: .now() + 6.0) {
+            finishOnce(.failure(NSError(domain: "RedisSync", code: -1, userInfo: [NSLocalizedDescriptionKey: "Sync request timed out"])))
+        }
+        
+        conn.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                if !password.isEmpty {
+                    let authCmd = Self.makeRespCommand(["AUTH", password])
+                    conn.send(content: authCmd, completion: .contentProcessed { authErr in
+                        if let authErr = authErr {
+                            finishOnce(.failure(authErr))
+                            return
+                        }
+                        // Send GET
+                        Self.sendGetAndReadBulkString(conn: conn, key: key, finish: finishOnce)
+                    })
+                } else {
+                    Self.sendGetAndReadBulkString(conn: conn, key: key, finish: finishOnce)
+                }
+            case .failed(let error):
+                finishOnce(.failure(error))
+            default:
+                break
+            }
+        }
+        
+        conn.start(queue: .global(qos: .userInitiated))
+    }
+    
+    nonisolated private static func sendGetAndReadBulkString(
+        conn: NWConnection,
+        key: String,
+        finish: @escaping @Sendable (Result<Data?, Error>) -> Void
+    ) {
+        let getCmd = makeRespCommand(["GET", key])
+        conn.send(content: getCmd, completion: .contentProcessed { sendErr in
+            if let sendErr = sendErr {
+                finish(.failure(sendErr))
+                return
+            }
+            
+            // Read bulk string response
+            let bufferBox = ResponseBufferBox()
+            receiveRemainingBulkString(conn: conn, bufferBox: bufferBox, finish: finish)
+        })
+    }
+    
+    nonisolated private static func receiveRemainingBulkString(
+        conn: NWConnection,
+        bufferBox: ResponseBufferBox,
+        finish: @escaping @Sendable (Result<Data?, Error>) -> Void
+    ) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, context, isComplete, error in
+            if let error = error {
+                finish(.failure(error))
+                return
+            }
+            
+            if let chunk = data {
+                bufferBox.append(chunk)
+            }
+            
+            let buffer = bufferBox.snapshot()
+            let crlf = Data([0x0D, 0x0A])
+            
+            // 1. Check for error starting with '-'
+            if buffer.starts(with: [0x2D]) {
+                if let crlfRange = buffer.range(of: crlf) {
+                    let errStr = String(data: buffer.subdata(in: 1..<crlfRange.lowerBound), encoding: .utf8) ?? "Unknown Redis Error"
+                    finish(.failure(NSError(domain: "Redis", code: -1, userInfo: [NSLocalizedDescriptionKey: errStr])))
+                    return
+                }
+            }
+            
+            // 2. Check for bulk string starting with '$'
+            if buffer.starts(with: [0x24]) {
+                if let crlfRange = buffer.range(of: crlf) {
+                    let lenData = buffer.subdata(in: 1..<crlfRange.lowerBound)
+                    if let lenStr = String(data: lenData, encoding: .utf8), let length = Int(lenStr) {
+                        // Key not found in Redis
+                        if length == -1 {
+                            finish(.success(nil))
+                            return
+                        }
+                        
+                        let dataStart = crlfRange.upperBound
+                        let dataEnd = dataStart + length
+                        if buffer.count >= dataEnd {
+                            let payload = buffer.subdata(in: dataStart..<dataEnd)
+                            finish(.success(payload))
+                            return
+                        }
+                    }
+                }
+            }
+            
+            if isComplete {
+                finish(.failure(NSError(domain: "Redis", code: -1, userInfo: [NSLocalizedDescriptionKey: "Incomplete Redis response"])))
+            } else {
+                receiveRemainingBulkString(conn: conn, bufferBox: bufferBox, finish: finish)
+            }
+        }
     }
     
     // MARK: - .env Loader
@@ -455,7 +798,6 @@ public final class RedisSyncService: ObservableObject {
     private func loadDotEnv() -> [String: String] {
         var result: [String: String] = [:]
         
-        // Comprehensive search paths for .env across bundle resources, current dir, home, and app support
         var paths: [String] = []
         if let resPath = Bundle.main.resourcePath {
             paths.append(resPath + "/.env")
@@ -504,5 +846,38 @@ public final class RedisSyncService: ObservableObject {
             str += "$\(count)\r\n\(arg)\r\n"
         }
         return str.data(using: .utf8) ?? Data()
+    }
+}
+
+final class AtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    
+    func executeOnce(_ action: () -> Void) {
+        lock.lock()
+        if !flag {
+            flag = true
+            lock.unlock()
+            action()
+        } else {
+            lock.unlock()
+        }
+    }
+}
+
+final class ResponseBufferBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    
+    func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+    
+    func snapshot() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
     }
 }

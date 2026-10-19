@@ -42,6 +42,35 @@ public struct SyncSettings: Codable, Equatable, Sendable {
         let prefix = ProcessInfo.processInfo.environment["REDIS_CHANNEL_PREFIX"] ?? "macalarm:sync:"
         return "\(prefix)\(safeName)"
     }
+    
+    public var activeDataKey: String {
+        let cleanEmail = email.lowercased().trimmingCharacters(in: .whitespaces)
+        let safeName = cleanEmail.isEmpty ? "default" : cleanEmail.replacingOccurrences(of: "@", with: "_at_").replacingOccurrences(of: ".", with: "_")
+        let prefix = ProcessInfo.processInfo.environment["REDIS_KEY_PREFIX"] ?? "macalarm:data:"
+        return "\(prefix)\(safeName):alarms"
+    }
+}
+
+public struct RemoteSyncContainer: Codable, Sendable {
+    public var lastUpdated: Date
+    public var deviceId: String
+    public var email: String
+    public var alarms: [AlarmItem]
+    public var deletedAlarmIds: [String: TimeInterval]?
+    
+    public init(
+        lastUpdated: Date = Date(),
+        deviceId: String,
+        email: String,
+        alarms: [AlarmItem],
+        deletedAlarmIds: [String: TimeInterval]? = nil
+    ) {
+        self.lastUpdated = lastUpdated
+        self.deviceId = deviceId
+        self.email = email
+        self.alarms = alarms
+        self.deletedAlarmIds = deletedAlarmIds
+    }
 }
 
 public enum SyncAction: String, Codable, Sendable {
@@ -98,4 +127,10 @@ public struct SyncLogEntry: Identifiable, Sendable {
         formatter.dateFormat = "HH:mm:ss"
         return formatter.string(from: timestamp)
     }
+}
+
+public extension Notification.Name {
+    static let openNewAlarmSheet = Notification.Name("com.alarm.openNewAlarmSheet")
+    static let openEditAlarmSheet = Notification.Name("com.alarm.openEditAlarmSheet")
+    static let alarmsUpdatedFromRemote = Notification.Name("com.alarm.alarmsUpdatedFromRemote")
 }

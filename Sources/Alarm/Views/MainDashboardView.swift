@@ -18,6 +18,7 @@ public enum DashboardTab: String, CaseIterable, Identifiable {
 
 public struct MainDashboardView: View {
     @ObservedObject private var store = AlarmStore.shared
+    @ObservedObject private var syncService = RedisSyncService.shared
     
     @State private var selectedTab: DashboardTab = .alarms
     @State private var showingAddSheet: Bool = false
@@ -51,6 +52,17 @@ public struct MainDashboardView: View {
         .sheet(item: $alarmToEdit) { alarm in
             AlarmEditView(alarmToEdit: alarm) { updated in
                 store.updateAlarm(updated)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openNewAlarmSheet)) { _ in
+            selectedTab = .alarms
+            showingAddSheet = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openEditAlarmSheet)) { notif in
+            selectedTab = .alarms
+            if let id = notif.object as? UUID,
+               let alarm = store.alarms.first(where: { $0.id == id }) {
+                alarmToEdit = alarm
             }
         }
     }
@@ -177,6 +189,30 @@ public struct MainDashboardView: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(Color.red.opacity(0.08))
                 )
+                
+                // Cloud Sync Indicator Pill
+                if syncService.settings.isEnabled {
+                    Button(action: {
+                        syncService.syncNow()
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: syncService.isSyncing ? "arrow.triangle.2.circlepath" : syncService.status.iconName)
+                                .font(.system(size: 11))
+                                .foregroundColor(syncService.status == .connected ? .green : (syncService.status == .error ? .orange : .secondary))
+                            Text(syncService.isSyncing ? "Syncing..." : syncService.status.rawValue)
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(NSColor.controlBackgroundColor))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Click to sync alarms with cloud now")
+                }
             }
         }
         .padding(20)
@@ -188,13 +224,13 @@ public struct MainDashboardView: View {
     private var greetingText: String {
         let hour = Calendar.current.component(.hour, from: store.currentTime)
         if hour >= 5 && hour < 12 {
-            return "Good morning 🌅"
+            return "Good morning"
         } else if hour >= 12 && hour < 17 {
-            return "Good afternoon ☀️"
+            return "Good afternoon"
         } else if hour >= 17 && hour < 22 {
-            return "Good evening 🌇"
+            return "Good evening"
         } else {
-            return "Night owl time 🌙"
+            return "Night owl time"
         }
     }
     
